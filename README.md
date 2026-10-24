@@ -107,7 +107,7 @@ Les quotas gratuits et les noms de modèles disponibles peuvent évoluer : consu
 Le micro doit être autorisé sur une adresse `http://localhost` ou `https://`. Si vous ouvrez simplement le fichier par double-clic (adresse en `file://`), le navigateur **redemandera l'accès au micro après chaque réponse**.
 
 ### Option 1 — Windows, le plus simple
-Double-cliquez sur **`lancer-maman.bat`**. Il démarre un serveur local avec PowerShell, déjà présent sur Windows, et ouvre automatiquement `http://localhost:8765/maman-nostromo.html`.
+Double-cliquez sur **`lancer-maman.bat`**. Il démarre un serveur local avec PowerShell, déjà présent sur Windows, et ouvre automatiquement `http://localhost:8000/maman-nostromo.html`.
 
 Laissez la fenêtre noire ouverte pendant l'utilisation, et fermez-la pour arrêter le serveur. Au premier lancement, Windows peut afficher un avertissement de sécurité : choisissez « Informations complémentaires » puis « Exécuter quand même ».
 
