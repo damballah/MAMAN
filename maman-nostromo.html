@@ -121,6 +121,7 @@
           <div>
             <label class="block dim text-xs mb-1" for="suMat">MATRICULE D'OFFICIER</label>
             <input id="suMat" class="su-in" type="text" placeholder="A-XXX-XXX-XX" autocomplete="off" spellcheck="false">
+            <div class="text-[11px] dim mt-1">Au choix : lettres, chiffres, tirets. Au moins un chiffre.</div>
           </div>
           <div>
             <label class="block dim text-xs mb-1" for="suName">NOM OU TITRE D'APPEL</label>
@@ -135,7 +136,7 @@
             <input id="suPw2" class="su-in" type="password" autocomplete="new-password">
           </div>
         </div>
-        <div class="text-[11px] dim">Le code d'accès protège les informations et commandes du registre classifié. Il n'est jamais enregistré : il est redemandé à chaque session.</div>
+        <div class="text-[11px] dim">Le code d'accès protège le registre classifié et autorise l'ajout d'autres officiers. Rien n'est conservé d'une session à l'autre, sauf la clé API : matricule, nom et empreinte vocale sont à refaire à chaque lancement.</div>
         <div id="suErr" class="ln err min-h-[1.2em]" aria-live="assertive"></div>
         <button id="suGo" class="tbtn on w-full justify-center text-base py-3"><span class="led"></span>INITIALISER MU-TH-UR 6000</button>
       </div>
@@ -261,13 +262,8 @@
 const MODEL = 'gemini-3-flash-preview';
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@google/genai@1/+esm';
 
-// Registre des matricules autorisés (ajoutez-en ici).
-// forms : écritures compactes acceptées (sans espaces ni tirets), comparées À L'IDENTIQUE.
-// short : forme abrégée acceptée uniquement si l'énoncé ne contient QUE cela.
-const REGISTRY = [
-  { id:'A-227-100-JP',    forms:['A227100JP'],                  short:['227'] },
-  { id:'A-100-227-ANGEL', forms:['A100227ANGEL','A100227ANGELE'], short:[] },
-];
+// Aucun matricule n'est codé en dur : chaque session définit les siens.
+// Format accepté : lettres, chiffres et tirets, 3 à 24 caractères, au moins un chiffre.
 const MAX_AUTH_FAILS = 3, LOCK_MS = 30000;
 
 const $ = s => document.querySelector(s);
@@ -281,7 +277,7 @@ const state = {
   running: false,
   micOn: true,
   mode: 'vocal',          // vocal | ecoute
-  ambient: false,
+  ambient: true,          // bruit de fond actif par défaut
   speaking: false,
   history: [],
   apiKey: store.get('maman_gemini_key') || '',
@@ -726,8 +722,9 @@ function forSpeech(text){
   let t = text
     .replace(/M\.?A\.?M\.?A\.?N\.?/gi, 'Maman')
     .replace(/MU-TH-UR/gi, 'Mouthur')
-    .replace(/A-227-100-JP/gi, 'A, 2 2 7, 1 0 0, J P')
-    .replace(/A-100-227-ANGEL/gi, 'A, 1 0 0, 2 2 7, Angel')
+    .replace(/\b[A-Z0-9]+(?:-[A-Z0-9]+)+\b/g, m => /\d/.test(m)
+        ? m.split('-').map(g => /^[A-Z]{1,2}$/.test(g) ? g.split('').join(' ') : g).join(', ')
+        : m)
     .replace(/[\[\]#*_>]/g, ' ');
   t = t.toLowerCase().replace(/(^\s*|[.!?]\s+)([a-zà-ÿ])/g, (m,a,b) => a + b.toUpperCase());
   return t;
@@ -936,10 +933,27 @@ function compactMatricule(t){
   s = wordsToDigits(s).toUpperCase().replace(/[^A-Z0-9]/g, '');
   return s.replace(/^(AH|HA)(?=\d)/, 'A');
 }
+// Renvoie { id:'B-42-7', compact:'B427' } ou null si le format n'est pas valide.
 function findMatricule(t){
-  const c = compactMatricule(t);
-  return REGISTRY.find(r => r.forms.includes(c) || r.short.includes(c)) || null;
+  let s = norm(t)
+    .replace(/^(mon |le )?(matricule|numero)( d'officier)?( est| :)?\s*/, '')
+    .replace(/^(c'est|voici|je suis)\s+/, '');
+  s = wordsToDigits(s).toUpperCase().replace(/[^A-Z0-9\s-]/g, ' ');
+  const tok = s.split(/[\s-]+/).filter(Boolean);
+  if(!tok.length) return null;
+  if(/^(AH|HA)$/.test(tok[0]) && tok[1] && /^\d/.test(tok[1])) tok[0] = 'A';
+  // lettres épelées une à une (« J P ») regroupées en un seul bloc
+  const groups = [];
+  for(const x of tok){
+    const prev = groups[groups.length-1];
+    if(x.length === 1 && /[A-Z]/.test(x) && prev && /^[A-Z]+$/.test(prev) && prev.length < 4 && groups.length > 1) groups[groups.length-1] = prev + x;
+    else groups.push(x);
+  }
+  const id = groups.join('-'), compact = groups.join('');
+  if(compact.length < 3 || compact.length > 24 || !/\d/.test(compact)) return null;
+  return { id, compact };
 }
+const sameMatricule = (a, b) => a.replace(/-/g,'') === b.replace(/-/g,'');
 const looksLikeMatricule = t => /\d/.test(wordsToDigits(t)) || /matricule/i.test(t);
 
 /* ---------- Noms ---------- */
@@ -971,7 +985,8 @@ async function processInput(text, feat, fromVoice, sid){
   if(state.awaitPw){
     if(!fromVoice) return checkPassword(text, sid);
     if(/^(annule|annuler|laisse tomber|abandon|oublie)/.test(norm(text))){
-      state.awaitPw = null; setPwInput(false);
+      if(state.awaitPw.kind === 'enroll') state.pending = null;
+      state.awaitPw = null; setPwInput(false); setStatus();
       addLine('user', text, current()?.name);
       await mamanSay("SAISIE DU CODE D'ACCÈS ANNULÉE.", sid);
       return;
@@ -993,7 +1008,7 @@ async function processInput(text, feat, fromVoice, sid){
       const cur = current();
       if(cur && !cur.voice && !state.pending){
         learnVoice(cur, feat); speaker = cur;
-        addLine('sys', `EMPREINTE VOCALE ASSOCIÉE À ${cur.name} (${voiceType(cur.voice)}).`);
+        addLine('sys', `EMPREINTE VOCALE DE ${cur.name} ENREGISTRÉE POUR CETTE SESSION (${voiceType(cur.voice)}).`);
       }
     }
   }else if(!state.pending){
@@ -1137,14 +1152,16 @@ async function authStep(text, feat, fromVoice, sid){
     return;
   }
 
+  if(p.stage === 'code'){ setPwInput(true); await mamanSay("SAISISSEZ LE CODE D'ACCÈS DE SESSION AU CLAVIER.", sid); return; }
+
   // ----- Étape 1 : matricule -----
   if(p.stage === 'id'){
     const m = findMatricule(text);
     if(!m){
-      await authFail('MATRICULE INEXISTANT DANS LE REGISTRE DE LA COMPAGNIE. ACCÈS REFUSÉ.', sid);
+      await authFail('MATRICULE NON CONFORME. FORMAT ATTENDU : LETTRES ET CHIFFRES, AU MOINS UN CHIFFRE.', sid);
       return;
     }
-    const existing = state.speakers.find(s => s.matricule === m.id);
+    const existing = state.speakers.find(s => sameMatricule(s.matricule, m.id));
     if(existing){
       const v = p.voice || feat;
       if(!v){
@@ -1169,14 +1186,14 @@ async function authStep(text, feat, fromVoice, sid){
     state.authFails = 0;
     p.matricule = m.id; p.stage = 'name';
     if(!p.voice && feat) p.voice = feat;
-    await mamanSay(`MATRICULE ${m.id} CONFIRMÉ. ACCÈS AUTORISÉ. COMMENT SOUHAITEZ-VOUS QUE JE VOUS APPELLE ?`, sid);
+    await mamanSay(`NOUVEAU MATRICULE ${m.id} ENREGISTRÉ. COMMENT SOUHAITEZ-VOUS QUE JE VOUS APPELLE ?`, sid);
     return;
   }
 
   // ----- Étape 2 : nom, avec confirmation si dicté -----
   if(p.stage === 'confirm'){
     const n = norm(text);
-    if(YES_RE.test(n)) return finalizeEnroll(p.candidate, feat, sid);
+    if(YES_RE.test(n)) return requestEnrollCode(p.candidate, feat, sid);
     const rest = NO_RE.test(n) ? text.replace(/^\s*(non|nan|négatif|negatif|incorrect|faux|erreur)\b[ ,]*/i, '') : text;
     if(NO_RE.test(n) && !cleanName(rest)){
       p.stage = 'name';
@@ -1191,9 +1208,27 @@ async function authStep(text, feat, fromVoice, sid){
     await mamanSay(`IDENTIFIANT ${name} DÉJÀ ATTRIBUÉ À UN AUTRE OFFICIER. VEUILLEZ EN CHOISIR UN AUTRE.`, sid);
     return;
   }
-  if(!fromVoice) return finalizeEnroll(name, feat, sid);   // saisie clavier : pas d'erreur de transcription possible
+  if(!fromVoice) return requestEnrollCode(name, feat, sid);   // saisie clavier : pas d'erreur de transcription possible
   p.candidate = name; p.stage = 'confirm';
   await mamanSay(`IDENTIFIANT ${name}. CONFIRMEZ-VOUS ?`, sid);
+}
+
+// Sans registre de matricules, l'ajout d'un officier est autorisé par le code d'accès de la session.
+async function requestEnrollCode(name, feat, sid){
+  const p = state.pending;
+  p.candidate = name; p.stage = 'code';
+  if(feat && !p.voice) p.voice = feat;
+  if(Date.now() < state.secLockUntil){
+    state.pending = null; setStatus();
+    beep('error');
+    await mamanSay(`AUTORISATION IMPOSSIBLE : CODE D'ACCÈS VERROUILLÉ ENCORE ${Math.ceil((state.secLockUntil-Date.now())/1000)} SECONDES.`, sid);
+    return;
+  }
+  state.awaitPw = { kind:'enroll', name };
+  setPwInput(true);
+  setStatus("CODE D'ACCÈS REQUIS");
+  beep('alert');
+  await mamanSay(`AJOUT DE L'OFFICIER ${name} SOUMIS À AUTORISATION. SAISISSEZ LE CODE D'ACCÈS DE SESSION AU CLAVIER.`, sid);
 }
 
 async function finalizeEnroll(name, feat, sid){
@@ -1407,6 +1442,30 @@ async function requestClassified(item, speaker, sid){
 
 async function checkPassword(text, sid){
   const a = state.awaitPw;
+  if(a.kind === 'enroll'){
+    addLine('user', '•'.repeat(Math.min(12, Math.max(4, text.length))), 'VOIX EN IDENTIFICATION');
+    if(text === secCode){
+      state.awaitPw = null; state.secFails = 0;
+      setPwInput(false);
+      addLine('sys', `CODE D'ACCÈS VALIDÉ. AJOUT DE ${a.name} AUTORISÉ.`);
+      if(state.pending) await finalizeEnroll(a.name, null, sid);
+      return;
+    }
+    state.secFails++;
+    if(state.secFails >= 3){
+      state.secFails = 0; state.awaitPw = null; state.pending = null;
+      state.secLockUntil = Date.now() + 60000;
+      setPwInput(false); setStatus();
+      beep('alert');
+      addLine('err', `TROIS CODES INVALIDES. AJOUT DE ${a.name} REFUSÉ. CODE D'ACCÈS VERROUILLÉ 60 SECONDES.`);
+      await mamanSay("TROIS CODES INVALIDES. AJOUT D'OFFICIER REFUSÉ. INCIDENT CONSIGNÉ.", sid);
+      return;
+    }
+    beep('error');
+    await mamanSay(`CODE D'ACCÈS INVALIDE. TENTATIVE ${state.secFails} SUR 3.`, sid);
+    setPwInput(true);
+    return;
+  }
   const sp = state.speakers.find(s => s.id === a.speakerId) || current();
   addLine('user', '•'.repeat(Math.min(12, Math.max(4, text.length))), sp?.name);
   if(text === secCode){
@@ -1720,14 +1779,14 @@ function openSetup(){
   state.setupOpen = true;
   setPwInput(false);
   $('#suKey').value = state.apiKey;
-  $('#suMat').value = store.get('maman_matricule') || '';
-  $('#suName').value = store.get('maman_nom') || '';
+  $('#suMat').value = '';
+  $('#suName').value = '';
   $('#suPw').value = ''; $('#suPw2').value = '';
   $('#suErr').textContent = '';
   document.querySelectorAll('.su-in').forEach(i => i.classList.remove('bad'));
   $('#setup').classList.remove('hidden');
   setStatus('VEILLE');
-  (state.apiKey ? ($('#suMat').value ? $('#suPw') : $('#suMat')) : $('#suKey')).focus();
+  (state.apiKey ? $('#suMat') : $('#suKey')).focus();
 }
 async function submitSetup(){
   const f = id => $('#' + id);
@@ -1738,19 +1797,20 @@ async function submitSetup(){
   const name = cleanName(f('suName').value);
   const pw = f('suPw').value, pw2 = f('suPw2').value;
   if(!key) return err('suKey', "CLÉ D'ACCÈS API GEMINI REQUISE.");
-  if(!mat) return err('suMat', "MATRICULE INEXISTANT DANS LE REGISTRE DE LA COMPAGNIE.");
+  if(!mat) return err('suMat', "MATRICULE NON CONFORME : 3 À 24 CARACTÈRES (LETTRES, CHIFFRES, TIRETS), DONT AU MOINS UN CHIFFRE.");
   if(!name) return err('suName', "NOM D'APPEL REQUIS (TROIS MOTS MAXIMUM).");
   if(pw.length < 4) return err('suPw', "CODE D'ACCÈS TROP COURT : 4 CARACTÈRES MINIMUM.");
   if(pw !== pw2) return err('suPw2', "LES DEUX CODES D'ACCÈS NE CORRESPONDENT PAS.");
 
   state.apiKey = key; store.set('maman_gemini_key', key); client = null;
-  store.set('maman_matricule', mat.id); store.set('maman_nom', name);
+  store.del('maman_matricule'); store.del('maman_nom');   // anciennes versions
   secCode = pw;
   f('suPw').value = ''; f('suPw2').value = '';
   $('#setup').classList.add('hidden');
   state.setupOpen = false;
 
   ctx();
+  if(state.ambient && !ambient) startAmbient();   // démarre au clic (le navigateur l'exige)
   if(!state.running){
     state.running = true;
     refreshVoice();
