@@ -2,7 +2,7 @@
 
 Terminal de bord du vaisseau d'*Alien, le 8ème passager* (1979), recréé dans le navigateur. On lui parle au micro ou au clavier, elle répond à voix haute grâce à l'API **Google Gemini**.
 
-![Capture d'écran du terminal](chemin/vers/image.png)
+![Capture d'écran du terminal]([chemin/vers/image.png](https://github.com/damballah/MAMAN/blob/main/MAMAN.png))
 
 ## Fonctionnalités
 
